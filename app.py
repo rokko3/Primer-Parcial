@@ -346,10 +346,13 @@ class SimulationApp(ctk.CTk):
                 if abs(pos_a[0] - pos_b[0]) <= self.model.radio_vecinos and abs(pos_a[1] - pos_b[1]) <= self.model.radio_vecinos:
                     dx, dy = xb - xa, yb - ya
                     dist = math.sqrt(dx**2 + dy**2)
-                    if dist > 0:
+                    if dist > (ra + rb + 7):
                         start_x, start_y = xa + (dx / dist) * (ra + 2), ya + (dy / dist) * (ra + 2)
                         end_x, end_y = xb - (dx / dist) * (rb + 5), yb - (dy / dist) * (rb + 5)
                         self.canvas.create_line(start_x, start_y, end_x, end_y, fill="#F59E0B", width=4, arrow=tk.LAST, arrowshape=(16, 20, 8))
+                    elif dist > 0:
+                        # Si están en la misma celda (muy juntos), dibujamos una línea directa sin flecha grande
+                        self.canvas.create_line(xa, ya, xb, yb, fill="#F59E0B", width=2)
 
 if __name__ == "__main__":
     model = MyModel(n_agents=50, width=20, height=20, queue_max=5, tasa_generacion=0.15)

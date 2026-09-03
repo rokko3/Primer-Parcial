@@ -69,7 +69,8 @@ class MyAgent(CellAgent):
             self.packets_received += 1
             self.registrar_accion(f"Procesar último paquete: {p['id']} LLEGÓ a destino")
             self.model.registrar_log(f"Nodo N{self.unique_id}: Paquete {p['id']} LLEGÓ a destino.")
-            return
+            self.state = "Entregado"
+            return True
 
         dist_actual = self.calcular_distancia_euclidiana(pos_actual, destino_pos)
         candidatos = []
@@ -98,6 +99,7 @@ class MyAgent(CellAgent):
                 p = self.queue.popleft()
                 p['saltos'] += 1
                 siguiente_salto.queue.append(p)
+                siguiente_salto.registrar_accion(f"Recibiendo paquete {p['id']} con destino {p['destino_id']} de N{self.unique_id} (Agregado a cola)")
                 self.packets_sent += 1
                 self.registrar_accion(f"Enrutar (PACKET DISTRIBUTION): {p['id']} a N{siguiente_salto.unique_id}")
                 self.model.transmisiones_actuales.append((self, siguiente_salto))
@@ -113,53 +115,28 @@ class MyAgent(CellAgent):
                 self.model.registrar_log(f"Nodo N{self.unique_id}: Paquete {p_lost['id']} PERDIDO por cola llena.")
         return False
 
-    def step(self):
-        """Máquina de estados donde cada acción toma un tick."""
-        if self.state == "Generando":
-            # Actualiza vecinos (HELLO) antes de actuar
-            self.detectar_vecinos()
-            # Ejecuta la generación
+    def procesar_trafico_y_enrutamiento(self):
+        """Generación y enrutamiento en el mismo tick."""
+        if self.state not in ["Congestionado", "Buscando", "Entregado"]:
+            self.state = "Buscando"
+
+        genero = False
+        if self.model.random.random() < self.model.tasa_generacion:
             otros = [a for a in self.model.agents if a.unique_id != self.unique_id and a.cell.coordinate != self.cell.coordinate]
             if otros:
                 destino = self.model.random.choice(otros)
-                self.generar_paquete(destino)
-            
-            # Cambia de estado para el próximo tick
-            if self.queue:
-                self.state = "Enrutando"
-            else:
-                self.state = "Buscando"
+                if self.generar_paquete(destino):
+                    self.state = "Generando"
+                    genero = True
 
-        elif self.state == "Enrutando":
-            # Actualiza vecinos (HELLO) antes de actuar
-            self.detectar_vecinos()
-            # Ejecuta el enrutamiento
-            self.enrutar_paquete()
-            
-            # Si se quedó sin paquetes, pasa a buscar
-            if not self.queue:
-                self.state = "Buscando"
-            elif len(self.queue) >= self.queue_max * 0.8:
+        enruto = self.enrutar_paquete()
+        
+        if enruto:
+            if self.state != "Entregado":
+                self.state = "Enrutando"
+        elif not genero:
+            if len(self.queue) >= self.queue_max * 0.8:
                 self.state = "Congestionado"
-
-        elif self.state == "Congestionado":
-            # Actualiza vecinos (HELLO) antes de actuar
-            self.detectar_vecinos()
-            self.enrutar_paquete()
-            if len(self.queue) < self.queue_max * 0.8:
-                self.state = "Enrutando" if self.queue else "Buscando"
-
-        else: # Buscando o Entregado
-            # Limpia estado si era entregado
-            self.state = "Buscando"
-            
-            # Ejecuta movimiento y detección (cuenta como 1 tick de escaneo de red)
-            self.mover()
-            self.detectar_vecinos()
-            
-            # Transición para el PRÓXIMO tick
-            if self.model.random.random() < self.model.tasa_generacion:
-                self.state = "Generando"
-            elif self.queue:
-                self.state = "Enrutando"
+            elif not self.queue:
+                self.state = "Buscando"
 

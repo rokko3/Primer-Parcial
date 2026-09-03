@@ -116,6 +116,8 @@ class MyAgent(CellAgent):
     def step(self):
         """Máquina de estados donde cada acción toma un tick."""
         if self.state == "Generando":
+            # Actualiza vecinos (HELLO) antes de actuar
+            self.detectar_vecinos()
             # Ejecuta la generación
             otros = [a for a in self.model.agents if a.unique_id != self.unique_id and a.cell.coordinate != self.cell.coordinate]
             if otros:
@@ -129,6 +131,8 @@ class MyAgent(CellAgent):
                 self.state = "Buscando"
 
         elif self.state == "Enrutando":
+            # Actualiza vecinos (HELLO) antes de actuar
+            self.detectar_vecinos()
             # Ejecuta el enrutamiento
             self.enrutar_paquete()
             
@@ -139,6 +143,8 @@ class MyAgent(CellAgent):
                 self.state = "Congestionado"
 
         elif self.state == "Congestionado":
+            # Actualiza vecinos (HELLO) antes de actuar
+            self.detectar_vecinos()
             self.enrutar_paquete()
             if len(self.queue) < self.queue_max * 0.8:
                 self.state = "Enrutando" if self.queue else "Buscando"

@@ -34,7 +34,7 @@ class MyAgent(CellAgent):
 
     def detectar_vecinos(self):
         """Fase 2: Actualiza la lista de vecinos locales una vez que TODOS los nodos se han movido."""
-        neighborhood = self.cell.get_neighborhood(radius=1, include_center=False)
+        neighborhood = self.cell.get_neighborhood(radius=2, include_center=False)
         self.vecinos = [agent for agent in neighborhood.agents if isinstance(agent, MyAgent)]
 
     def generar_paquete(self, destino_agent):
@@ -50,6 +50,7 @@ class MyAgent(CellAgent):
             }
             self.queue.append(packet)
             self.model.total_generados += 1
+            self.state = "Generando"
             return True
         else:
             self.packets_lost += 1
@@ -362,11 +363,12 @@ class SimulationApp(ctk.CTk):
         frame_leyenda.pack(fill="x", padx=15, pady=(5, 8))
 
         items_leyenda = [
-            ("Normal", "#2563EB"),
-            ("Enrutando", "#059669"),
-            ("Cola 50%", "#D97706"),
-            ("Congestionado", "#DC2626"),
-            ("Enlace Activo", "#F59E0B")
+            ("🔵 Normal", "#2563EB"),
+            ("🟣 Generando", "#9333EA"),
+            ("🟢 Enrutando", "#059669"),
+            ("🟠 Cola 50%", "#D97706"),
+            ("🔴 Congestionado", "#DC2626"),
+            ("⚡ Enlace Activo", "#F59E0B")
         ]
         for texto, color in items_leyenda:
             lbl = ctk.CTkLabel(frame_leyenda, text=texto, text_color=color, font=ctk.CTkFont(size=11, weight="bold"))
@@ -536,6 +538,8 @@ class SimulationApp(ctk.CTk):
             q_ratio = len(agent.queue) / agent.queue_max
             if q_ratio >= 1.0:
                 color = "#DC2626"  # Rojo: Congestionado
+            elif agent.state == "Generando":
+                color = "#9333EA"  # Morado: Generador de paquete
             elif q_ratio >= 0.5:
                 color = "#D97706"  # Naranja: Semi-lleno
             elif agent.state == "Enrutando":

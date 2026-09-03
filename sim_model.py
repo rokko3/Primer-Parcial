@@ -36,6 +36,14 @@ class MyModel(mesa.Model):
         self.current_step += 1
         self.transmisiones_actuales.clear()
         
-        # Con la nueva lógica, llamamos a step() en todos los agentes
-        # Cada agente ejecutará una sola acción según su estado
-        self.agents.shuffle_do("step")
+        # FASE 1: Movimiento sincronizado de todos los nodos
+        for a in self.agents:
+            a.mover()
+                
+        # FASE 2: Actualización sincronizada de vecinos (todos a la vez, garantizando simetría)
+        for a in self.agents:
+            a.detectar_vecinos()
+            
+        # FASE 3: Generación y enrutamiento
+        for a in self.agents:
+            a.procesar_trafico_y_enrutamiento()

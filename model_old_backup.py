@@ -24,6 +24,10 @@ class MyAgent(CellAgent):
         self.packets_sent = 0
         self.packets_received = 0
         self.packets_lost = 0
+        self.historial_acciones = deque(maxlen=10) # Guarda las últimas 10 acciones
+
+    def registrar_accion(self, accion):
+        self.historial_acciones.append(f"[Tick {self.model.current_step}] {accion}")
 
     def mover(self):
         """Fase 1: Mueve el agente a una celda vecina en la rejilla."""
@@ -34,8 +38,12 @@ class MyAgent(CellAgent):
 
     def detectar_vecinos(self):
         """Fase 2: Actualiza la lista de vecinos locales una vez que TODOS los nodos se han movido."""
-        neighborhood = self.cell.get_neighborhood(radius=2, include_center=False)
+        self.registrar_accion("Limpiar Vecinos")
+        self.registrar_accion("Enviando PACKET SEND HELLO")
+        neighborhood = self.cell.get_neighborhood(radius=self.model.radio_vecinos, include_center=False)
         self.vecinos = [agent for agent in neighborhood.agents if isinstance(agent, MyAgent)]
+        if self.vecinos:
+            self.registrar_accion(f"Registrar {len(self.vecinos)} vecino(s) (PACKET CONFIRMATION)")
 
     def generar_paquete(self, destino_agent):
         """Crea un nuevo paquete de datos con origen este nodo y destino el nodo indicado."""
@@ -51,6 +59,7 @@ class MyAgent(CellAgent):
             self.queue.append(packet)
             self.model.total_generados += 1
             self.state = "Generando"
+            self.registrar_accion(f"Generando paquete {packet['id']} hacia N{destino_agent.unique_id}")
             return True
         else:
             self.packets_lost += 1
@@ -67,22 +76,25 @@ class MyAgent(CellAgent):
         return math.sqrt(dx**2 + dy**2)
 
     def enrutar_paquete(self):
-        """Fase 3: Regla local de enrutamiento goloso sobre posiciones sincronizadas."""
+        """Fase 3: Intenta enviar un paquete al mejor vecino según la distancia al destino y el nivel de congestión."""
         if not self.queue:
-            self.state = "Buscando"
-            return
+            if self.state not in ["Congestionado", "Buscando"]:
+                self.state = "Buscando"
+            return None
 
+        # Tomamos el paquete más antiguo (FIFO) sin sacarlo aún de la cola
         packet = self.queue[0]
-        pos_actual = self.cell.coordinate
         destino_pos = packet['destino_pos']
+        pos_actual = self.cell.coordinate
 
-        # CASO 1: Paquete llegó a destino final
+        # Si el paquete ya llegó a su destino final
         if pos_actual == destino_pos:
-            self.queue.popleft()
+            p = self.queue.popleft()
+            self.state = "Entregado"
             self.model.total_entregados += 1
             self.packets_received += 1
-            self.state = "Entregado"
-            self.model.registrar_log(f"Nodo N{self.unique_id}: Paquete {packet['id']} LLEGÓ a destino.")
+            self.registrar_accion(f"Procesar último paquete: {p['id']} LLEGÓ a destino")
+            self.model.registrar_log(f"Nodo N{self.unique_id}: Paquete {p['id']} LLEGÓ a destino.")
             return
 
         # CASO 2: Enrutamiento Goloso hacia el vecino más cercano al destino
@@ -108,6 +120,7 @@ class MyAgent(CellAgent):
                 siguiente_salto = no_congestionados[0]['agente']
             else:
                 self.state = "Congestionado"
+                self.registrar_accion(f"Descartando {packet['id']} por congestión (Buscar Mejor Vecino)")
                 self.model.registrar_log(f"Nodo N{self.unique_id}: Vecinos más cercanos congestionados para {packet['id']}.")
 
         if siguiente_salto is not None:
@@ -117,6 +130,7 @@ class MyAgent(CellAgent):
                 siguiente_salto.queue.append(p)
                 self.packets_sent += 1
                 self.state = "Enrutando"
+                self.registrar_accion(f"Enrutar (PACKET DISTRIBUTION): {p['id']} a N{siguiente_salto.unique_id}")
                 # Registrar referencia a los agentes (origen y destino) para consultar sus posiciones finales sincronizadas
                 self.model.transmisiones_actuales.append((self, siguiente_salto))
             else:
@@ -127,12 +141,14 @@ class MyAgent(CellAgent):
                 self.packets_lost += 1
                 self.model.total_perdidos += 1
                 self.state = "Congestionado"
+                self.registrar_accion(f"Descartando {p_lost['id']} localmente por cola llena")
                 self.model.registrar_log(f"Nodo N{self.unique_id}: Paquete {p_lost['id']} PERDIDO por cola llena.")
 
     def procesar_trafico_y_enrutamiento(self):
         """Generación y enrutamiento en la fase de comunicación."""
         if self.model.random.random() < self.model.tasa_generacion:
-            otros = [a for a in self.model.agents if a != self]
+            # Filtramos para no enviarnos a nosotros mismos, ni a nodos que casualmente estén en la misma celda
+            otros = [a for a in self.model.agents if a.unique_id != self.unique_id and a.cell.coordinate != self.cell.coordinate]
             if otros:
                 destino = self.model.random.choice(otros)
                 self.generar_paquete(destino)
@@ -141,12 +157,13 @@ class MyAgent(CellAgent):
 
 
 class MyModel(mesa.Model):
-    def __init__(self, n_agents=50, width=20, height=20, queue_max=5, tasa_generacion=0.15):
+    def __init__(self, n_agents=50, width=20, height=20, queue_max=5, tasa_generacion=0.15, radio_vecinos=1):
         super().__init__()
         self.grid = OrthogonalMooreGrid((width, height), torus=True)
         self.n_agents = n_agents
         self.queue_max = queue_max
         self.tasa_generacion = tasa_generacion
+        self.radio_vecinos = radio_vecinos
 
         self.current_step = 0
         self.total_generados = 0
@@ -162,9 +179,6 @@ class MyModel(mesa.Model):
         agents = MyAgent.create_agents(self, n_agents, queue_max=queue_max)
         for agent, cell in zip(agents, celdas_seleccionadas):
             agent.cell = cell
-
-        for agent in self.agents:
-            agent.detectar_vecinos()
 
     def registrar_log(self, mensaje):
         log_entry = f"[Step {self.current_step}] {mensaje}"
@@ -278,11 +292,38 @@ class SimulationApp(ctk.CTk):
         )
         self.btn_reset.pack(fill="x", padx=12, pady=(4, 8))
 
-        # PARÁMETROS
+        # PARÁMETROS Y CONFIGURACIÓN INICIAL
         frame_param = ctk.CTkFrame(self.panel_izq, corner_radius=8)
         frame_param.pack(fill="x", padx=15, pady=5)
+        
+        lbl_sec_params = ctk.CTkLabel(frame_param, text="Configuración (Aplicar al Reiniciar)", font=ctk.CTkFont(size=12, weight="bold"))
+        lbl_sec_params.pack(pady=(6, 4))
 
-        self.lbl_tasa_val = ctk.CTkLabel(frame_param, text=f"Tasa de Generación: {int(self.model.tasa_generacion * 100)}%", font=ctk.CTkFont(size=12, weight="bold"))
+        # Nodos
+        frame_nodos = ctk.CTkFrame(frame_param, fg_color="transparent")
+        frame_nodos.pack(fill="x", padx=12, pady=1)
+        ctk.CTkLabel(frame_nodos, text="Cant. Nodos:").pack(side="left")
+        self.entry_nodos = ctk.CTkEntry(frame_nodos, width=60, height=24)
+        self.entry_nodos.insert(0, str(self.model.n_agents))
+        self.entry_nodos.pack(side="right")
+
+        # Grilla
+        frame_grilla = ctk.CTkFrame(frame_param, fg_color="transparent")
+        frame_grilla.pack(fill="x", padx=12, pady=1)
+        ctk.CTkLabel(frame_grilla, text="Grilla (L x L):").pack(side="left")
+        self.entry_grilla = ctk.CTkEntry(frame_grilla, width=60, height=24)
+        self.entry_grilla.insert(0, str(self.model.grid.width))
+        self.entry_grilla.pack(side="right")
+
+        # Radio
+        frame_radio = ctk.CTkFrame(frame_param, fg_color="transparent")
+        frame_radio.pack(fill="x", padx=12, pady=1)
+        ctk.CTkLabel(frame_radio, text="Radio Vecinos:").pack(side="left")
+        self.entry_radio = ctk.CTkEntry(frame_radio, width=60, height=24)
+        self.entry_radio.insert(0, str(self.model.radio_vecinos))
+        self.entry_radio.pack(side="right")
+
+        self.lbl_tasa_val = ctk.CTkLabel(frame_param, text=f"Tasa de Generación: {int(self.model.tasa_generacion * 100)}%", font=ctk.CTkFont(size=12))
         self.lbl_tasa_val.pack(pady=(6, 2))
 
         self.slider_tasa = ctk.CTkSlider(
@@ -333,6 +374,13 @@ class SimulationApp(ctk.CTk):
         )
         self.lbl_inspect_info.pack(fill="x", padx=10, pady=(0, 6))
 
+        # LOG DEL NODO SELECCIONADO
+        self.lbl_node_log_title = ctk.CTkLabel(self.frame_inspect, text="Historial de Acciones", font=ctk.CTkFont(size=11, weight="bold"))
+        self.lbl_node_log_title.pack(anchor="w", padx=10, pady=(5, 0))
+        
+        self.txt_node_log = ctk.CTkTextbox(self.frame_inspect, height=80, font=ctk.CTkFont(family="Consolas", size=10), fg_color="#0F172A")
+        self.txt_node_log.pack(fill="x", padx=10, pady=(2, 10))
+
         # CONSOLA LOG
         self.txt_log = ctk.CTkTextbox(self.panel_izq, height=110, font=ctk.CTkFont(family="Consolas", size=10))
         self.txt_log.pack(fill="both", expand=True, padx=15, pady=(5, 12))
@@ -341,12 +389,12 @@ class SimulationApp(ctk.CTk):
         self.panel_der = ctk.CTkScrollableFrame(self, corner_radius=10)
         self.panel_der.grid(row=0, column=1, padx=15, pady=15, sticky="nsew")
 
-        lbl_grid_title = ctk.CTkLabel(
+        self.lbl_grid_title = ctk.CTkLabel(
             self.panel_der, 
-            text="Grilla Dinámica de Nodos Móviles (20x20 - 50 Nodos)", 
+            text=f"Grilla Dinámica de Nodos Móviles ({self.model.grid.width}x{self.model.grid.height} - {self.model.n_agents} Nodos)", 
             font=ctk.CTkFont(size=16, weight="bold")
         )
-        lbl_grid_title.pack(pady=8)
+        self.lbl_grid_title.pack(pady=8)
 
         self.canvas_size = 700
         self.canvas = tk.Canvas(
@@ -419,7 +467,18 @@ class SimulationApp(ctk.CTk):
         self.selected_nodes = []
         self.selected_cell_coords = None
         self.btn_play_pause.configure(text="🔄 Continuo (Play/Pause)", fg_color="#D97706")
-        self.model = MyModel(n_agents=50, width=20, height=20, queue_max=5, tasa_generacion=self.slider_tasa.get())
+        
+        try:
+            n_agents = int(self.entry_nodos.get())
+            grid_size = int(self.entry_grilla.get())
+            radio = int(self.entry_radio.get())
+        except ValueError:
+            n_agents = 50
+            grid_size = 20
+            radio = 1
+            
+        self.model = MyModel(n_agents=n_agents, width=grid_size, height=grid_size, queue_max=5, tasa_generacion=self.slider_tasa.get(), radio_vecinos=radio)
+        self.lbl_grid_title.configure(text=f"Grilla Dinámica de Nodos Móviles ({grid_size}x{grid_size} - {n_agents} Nodos)")
         self.actualizar_interfaz()
 
     def on_canvas_click(self, event):
@@ -461,8 +520,16 @@ class SimulationApp(ctk.CTk):
                 info += f"  • Vecinos: {[f'N{v.unique_id}' for v in sn.vecinos]}\n"
                 info += f"  • Paquetes enviados: {sn.packets_sent} | Perdidos: {sn.packets_lost}\n"
             self.lbl_inspect_info.configure(text=info, text_color="#38BDF8")
+
+            self.txt_node_log.delete("1.0", "end")
+            for sn in self.selected_nodes:
+                self.txt_node_log.insert("end", f"--- Log N{sn.unique_id} ---\n")
+                for accion in sn.historial_acciones:
+                    self.txt_node_log.insert("end", accion + "\n")
+            self.txt_node_log.see("end")
         else:
             self.lbl_inspect_info.configure(text="Haz clic en cualquier celda para inspeccionar los nodos.", text_color="gray")
+            self.txt_node_log.delete("1.0", "end")
 
         self.txt_log.delete("1.0", "end")
         for log in self.model.logs[-15:]:
